@@ -1,0 +1,620 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+   Name = "Ride a Pet Hub | One-Click Executor",
+   LoadingTitle = "กำลังโหลดระบบและตัวรันสคริปต์...",
+   LoadingSubtitle = "by Assistant",
+   ConfigurationSaving = { Enabled = false }
+})
+
+local TabMain = Window:CreateTab("ฟังก์ชันหลัก", 4483362458)
+local TabAuto = Window:CreateTab("ระบบฟาร์มอัตโนมัติ", 4483362458)
+local TabTeleport = Window:CreateTab("ระบบบิน / วาร์ป", 4483362458)
+local TabAI = Window:CreateTab("💬 Box AI & ตัวรันด่วน", 4483362458)
+
+local player = game.Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+
+local flySpeed = 350
+local isFlyingHome = false
+local autoFlyOnE = true
+
+local autoFarm100B = false
+local autoFarm1T = false
+
+-- ==================== ระบบเทรน Box AI & รันโค้ด ====================
+
+local currentApiKey = "sk-e99f2d1345744f7485d9c77be9dad183"
+local currentQuestion = ""
+local lastExtractedCode = "" 
+local customUserScript = "" 
+
+local systemTrainingPrompt = [[
+[SYSTEM INSTRUCTION: STRICT SCRIPT EDITOR AGENT]
+คุณคือ "Box AI" ผู้เชี่ยวชาญระดับสูงด้านการเขียนและแก้ไขสคริปต์ Lua บน Delta Executor สำหรับเกม Roblox (โดยเฉพาะแมพ Ride a Pet)
+กฎประจำตัวที่คุณต้องปฏิบัติตามอย่างเคร่งครัด:
+1. คุณรับรู้ว่าตัวคุณกำลังทำงานอยู่ภายในหน้าต่าง Rayfield UI บน Delta Executor ของผู้ใช้
+2. คุณสามารถอ่านโค้ด, ตรวจสอบข้อผิดพลาด (Debug), ปรับแต่งค่า, และแก้ไขสคริปต์ Lua ให้ผู้ใช้ได้ทันที
+3. เมื่อผู้ใช้ขอให้แก้โค้ด, เพิ่มฟังก์ชัน, หรือปรับแต่ง ให้คุณตอบเป็นโค้ด Lua ที่ถูกต้องพร้อมคำอธิบายสั้นๆ ภาษาไทย
+4. หากคุณเขียนโค้ด Lua ให้ครอบด้วยแท็ก ```lua และ ``` เสมอ เพื่อให้ระบบของตัวเกมดึงโค้ดไปรันสดได้
+5. ตอบเป็นภาษาไทย กระชับ เป็นกันเอง และมั่นใจในความสามารถด้าน Scripting ของตัวเอง
+]]
+
+local conversationHistory = {
+   { role = "system", content = systemTrainingPrompt }
+}
+local chatLogDisplay = "=== Box AI พร้อมช่วยเขียนและรันสคริปต์ทันที ==="
+
+local function askBoxAI(question, updateCallback)
+   local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+   if not httpRequest then
+      updateCallback("❌ ตัวรัน Delta ไม่รองรับคำสั่ง http_request")
+      return
+   end
+
+   table.insert(conversationHistory, { role = "user", content = question })
+
+   local cleanKey = currentApiKey:gsub("%s+", "")
+   local bodyData = {
+      model = "deepseek-chat",
+      messages = conversationHistory
+   }
+
+   local headers = {
+      ["Content-Type"] = "application/json",
+      ["Authorization"] = "Bearer " .. cleanKey
+   }
+
+   local success, response = pcall(function()
+      return httpRequest({
+         Url = "https://api.deepseek.com/chat/completions",
+         Method = "POST",
+         Headers = headers,
+         Body = HttpService:JSONEncode(bodyData)
+      })
+   end)
+
+   if success and response then
+      local decodeSuccess, decoded = pcall(function()
+         return HttpService:JSONDecode(response.Body)
+      end)
+
+      if decodeSuccess and decoded then
+         if decoded.choices and decoded.choices[1] and decoded.choices[1].message then
+            local aiReply = decoded.choices[1].message.content
+            table.insert(conversationHistory, { role = "assistant", content = aiReply })
+            
+            local codeMatch = aiReply:match("```lua\n(.-)```") or aiReply:match("```(.-)```")
+            if codeMatch then
+               lastExtractedCode = codeMatch
+            end
+
+            chatLogDisplay = chatLogDisplay .. "\n\n👤 คุณ: " .. question .. "\n🤖 Box AI:\n" .. aiReply
+            updateCallback(chatLogDisplay)
+            return
+         elseif decoded.error then
+            table.remove(conversationHistory, #conversationHistory)
+            updateCallback(chatLogDisplay .. "\n\n⚠️ ข้อผิดพลาด API: " .. tostring(decoded.error.message))
+            return
+         end
+      end
+      table.remove(conversationHistory, #conversationHistory)
+      updateCallback(chatLogDisplay .. "\n\n⚠️ Error: " .. tostring(response.Body))
+   else
+      table.remove(conversationHistory, #conversationHistory)
+      updateCallback(chatLogDisplay .. "\n\n❌ การเชื่อมต่อล้มเหลว")
+   end
+end
+
+-- ==================== แท็บ Box AI & เมนูปุ่มรัน ====================
+
+TabAI:CreateSection("⚡ ปุ่มรันสคริปต์สำเร็จรูป (กดรันได้ทันที)")
+
+-- 1. ปุ่มรัน ESP ไข่
+TabAI:CreateButton({
+   Name = "👁️ รัน ESP มองทะลุจุดไข่ทั้งหมด",
+   Callback = function()
+      pcall(function()
+         for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("TextLabel") and (obj.Text:find("B") or obj.Text:find("T") or obj.Text:find("M")) then
+               local targetPart = obj:FindFirstAncestorWhichIsA("BasePart")
+               if targetPart and not targetPart:FindFirstChild("EggHighlight") then
+                  local hl = Instance.new("Highlight")
+                  hl.Name = "EggHighlight"
+                  hl.FillColor = Color3.fromRGB(255, 215, 0)
+                  hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                  hl.Parent = targetPart
+               end
+            end
+         end
+         Rayfield:Notify({
+            Title = "ESP สำเร็จ",
+            Content = "เปิดการมองทะลุไข่รอบตัวเรียบร้อย!",
+            Duration = 3,
+            Image = 4483362458,
+         })
+      end)
+   end,
+})
+
+-- 2. ปุ่มรันกระโดดรัวๆ (Infinite Jump)
+local infJumpActive = false
+TabAI:CreateButton({
+   Name = "🦘 รันสคริปต์กระโดดไม่จำกัด (Infinite Jump)",
+   Callback = function()
+      if not infJumpActive then
+         infJumpActive = true
+         UserInputService.JumpRequest:Connect(function()
+            if infJumpActive and player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+               player.Character:FindFirstChildOfClass("Humanoid"):ChangeState("Jumping")
+            end
+         end)
+         Rayfield:Notify({
+            Title = "Infinite Jump",
+            Content = "เปิดระบบกระโดดรัวกลางอากาศแล้ว!",
+            Duration = 3,
+            Image = 4483362458,
+         })
+      end
+   end,
+})
+
+-- 3. ปุ่มรันเดินทะลุกำแพงตลอดเวลา (Noclip)
+local noclipActive = false
+TabAI:CreateButton({
+   Name = "🧱 รันสคริปต์เดินทะลุกำแพง (Noclip)",
+   Callback = function()
+      noclipActive = not noclipActive
+      if noclipActive then
+         RunService.Stepped:Connect(function()
+            if noclipActive and player.Character then
+               for _, p in pairs(player.Character:GetDescendants()) do
+                  if p:IsA("BasePart") then p.CanCollide = false end
+               end
+            end
+         end)
+         Rayfield:Notify({
+            Title = "Noclip",
+            Content = "เปิดโหมดทะลุกำแพงแล้ว!",
+            Duration = 3,
+            Image = 4483362458,
+         })
+      else
+         Rayfield:Notify({
+            Title = "Noclip",
+            Content = "ปิดโหมดทะลุกำแพงแล้ว",
+            Duration = 2,
+            Image = 4483362458,
+         })
+      end
+   end,
+})
+
+TabAI:CreateSection("🛠️ ช่องใส่สคริปต์เอง & รันโค้ด AI")
+
+TabAI:CreateButton({
+   Name = "⚡ นำโค้ดที่ AI ตอบล่าสุดไปรันสด (Run AI Code)",
+   Callback = function()
+      if lastExtractedCode ~= "" then
+         local func, err = loadstring(lastExtractedCode)
+         if func then
+            task.spawn(func)
+            Rayfield:Notify({
+               Title = "สำเร็จ",
+               Content = "รันโค้ดของ AI เรียบร้อยแล้ว!",
+               Duration = 3,
+               Image = 4483362458,
+            })
+         else
+            Rayfield:Notify({
+               Title = "Syntax Error",
+               Content = "โค้ดมีข้อผิดพลาด: " .. tostring(err),
+               Duration = 4,
+               Image = 4483362458,
+            })
+         end
+      else
+         Rayfield:Notify({
+            Title = "ไม่พบโค้ด",
+            Content = "ยังไม่มีโค้ดในคำตอบล่าสุดของ AI",
+            Duration = 3,
+            Image = 4483362458,
+         })
+      end
+   end,
+})
+
+TabAI:CreateInput({
+   Name = "พิมพ์หรือวางโค้ด Lua เอง",
+   PlaceholderText = "วางโค้ดตรงนี้...",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text)
+      customUserScript = Text
+   end,
+})
+
+TabAI:CreateButton({
+   Name = "▶️ รันโค้ดที่พิมพ์เองทันที (Execute Custom)",
+   Callback = function()
+      if customUserScript ~= "" and customUserScript:gsub("%s+", "") ~= "" then
+         local func, err = loadstring(customUserScript)
+         if func then
+            task.spawn(func)
+            Rayfield:Notify({
+               Title = "สำเร็จ",
+               Content = "รันสคริปต์ที่คุณใส่เรียบร้อยแล้ว!",
+               Duration = 3,
+               Image = 4483362458,
+            })
+         else
+            Rayfield:Notify({
+               Title = "Syntax Error",
+               Content = "โค้ดมีข้อผิดพลาด: " .. tostring(err),
+               Duration = 4,
+               Image = 4483362458,
+            })
+         end
+      else
+         Rayfield:Notify({
+            Title = "แจ้งเตือน",
+            Content = "กรุณาวางโค้ดก่อนกดรัน!",
+            Duration = 3,
+            Image = 4483362458,
+         })
+      end
+   end,
+})
+
+TabAI:CreateSection("🤖 Box AI ถามตอบ & ช่วยแก้โค้ด")
+
+local AIChatParagraph = TabAI:CreateParagraph({
+   Title = "หน้าจอ Box AI:",
+   Content = chatLogDisplay
+})
+
+TabAI:CreateInput({
+   Name = "สั่งให้ AI เขียนสคริปต์เพิ่ม",
+   PlaceholderText = "พิมพ์คำสั่ง เช่น 'เขียนโค้ดปรับแรงกระโดดให้หน่อย'...",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text)
+      currentQuestion = Text
+   end,
+})
+
+TabAI:CreateButton({
+   Name = "📨 ส่งคำสั่งให้ AI",
+   Callback = function()
+      if currentQuestion == "" or currentQuestion:gsub("%s+", "") == "" then return end
+
+      local sentText = currentQuestion
+      currentQuestion = ""
+
+      AIChatParagraph:Set({
+         Title = "สถานะ:",
+         Content = chatLogDisplay .. "\n\n👤 คุณ: " .. sentText .. "\n🤖 Box AI: ⏳ กำลังคิดและเขียนโค้ด..."
+      })
+
+      task.spawn(function()
+         askBoxAI(sentText, function(updatedText)
+            AIChatParagraph:Set({
+               Title = "หน้าจอ Box AI:",
+               Content = updatedText
+            })
+         end)
+      end)
+   end,
+})
+
+TabAI:CreateButton({
+   Name = "🗑️ รีเซ็ตประวัติ AI",
+   Callback = function()
+      conversationHistory = {
+         { role = "system", content = systemTrainingPrompt }
+      }
+      lastExtractedCode = ""
+      chatLogDisplay = "=== รีเซ็ตประวัติ AI เรียบร้อย ==="
+      AIChatParagraph:Set({
+         Title = "หน้าจอ Box AI:",
+         Content = chatLogDisplay
+      })
+   end,
+})
+
+TabAI:CreateSection("ตั้งค่า API Key")
+
+TabAI:CreateInput({
+   Name = "DeepSeek API Key",
+   PlaceholderText = "วาง API Key ที่นี่...",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text)
+      if Text and Text:gsub("%s+", "") ~= "" then
+         currentApiKey = Text:gsub("%s+", "")
+         Rayfield:Notify({
+            Title = "บันทึกแล้ว",
+            Content = "อัปเดตคีย์ใหม่เรียบร้อย",
+            Duration = 2,
+            Image = 4483362458,
+         })
+      end
+   end,
+})
+
+-- ==================== ฟังก์ชันแกนกลาง (ฟาร์ม & บิน) ====================
+
+local function getHomePosition()
+   local spawnLocation = workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("Spawns")
+   if spawnLocation then
+      if spawnLocation:IsA("BasePart") then
+         return spawnLocation.Position + Vector3.new(0, 5, 0)
+      else
+         local firstSpawn = spawnLocation:FindFirstChildWhichIsA("BasePart")
+         if firstSpawn then
+            return firstSpawn.Position + Vector3.new(0, 5, 0)
+         end
+      end
+   end
+   return Vector3.new(0, 15, 0)
+end
+
+local function flyBackHomeSync()
+   local char = player.Character
+   if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+   local hrp = char.HumanoidRootPart
+   local targetPos = getHomePosition()
+
+   local bv = Instance.new("BodyVelocity")
+   bv.Velocity = Vector3.zero
+   bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+   bv.Parent = hrp
+
+   local noclipConn = RunService.Stepped:Connect(function()
+      pcall(function()
+         for _, p in pairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+               p.CanCollide = false
+            end
+         end
+      end)
+   end)
+
+   while true do
+      if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then break end
+      local currentPos = hrp.Position
+      local direction = (targetPos - currentPos)
+      local distance = direction.Magnitude
+
+      if distance < 10 then break end
+      bv.Velocity = direction.Unit * flySpeed
+      task.wait()
+   end
+
+   if bv then bv:Destroy() end
+   if noclipConn then noclipConn:Disconnect() end
+   if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
+
+   pcall(function()
+      for _, p in pairs(char:GetDescendants()) do
+         if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+            p.CanCollide = true
+         end
+      end
+   end)
+end
+
+local function findEggTarget(keyword)
+   local targetKeyword = keyword:lower()
+   for _, label in pairs(workspace:GetDescendants()) do
+      if label:IsA("TextLabel") and label.Text:lower():find(targetKeyword) then
+         local part = label:FindFirstAncestorWhichIsA("BasePart") or label:FindFirstAncestorWhichIsA("Model")
+         if part then
+            local targetPart = part:IsA("BasePart") and part or (part.PrimaryPart or part:FindFirstChildWhichIsA("BasePart"))
+            if targetPart then return targetPart end
+         end
+      end
+   end
+   for _, obj in pairs(workspace:GetDescendants()) do
+      if obj.Name:lower():find(targetKeyword) then
+         local targetPart = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart"))
+         if targetPart then return targetPart end
+      end
+   end
+   return nil
+end
+
+local function triggerNearbyPrompts()
+   pcall(function()
+      local char = player.Character
+      if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+      local pos = char.HumanoidRootPart.Position
+
+      for _, prompt in pairs(workspace:GetDescendants()) do
+         if prompt:IsA("ProximityPrompt") then
+            local promptPart = prompt:FindFirstAncestorWhichIsA("BasePart")
+            if promptPart and (promptPart.Position - pos).Magnitude <= (prompt.MaxActivationDistance + 10) then
+               fireproximityprompt(prompt, 1)
+            end
+         end
+      end
+   end)
+end
+
+-- ==================== แท็บฟังก์ชันหลัก ====================
+
+local function makeInstant(prompt)
+   if prompt:IsA("ProximityPrompt") then
+      prompt.HoldDuration = 0
+   end
+end
+for _, prompt in pairs(workspace:GetDescendants()) do makeInstant(prompt) end
+workspace.DescendantAdded:Connect(makeInstant)
+
+TabMain:CreateToggle({
+   Name = "Instant E (กดเก็บทันที ไม่ต้องรอหลอด)",
+   CurrentValue = true,
+   Flag = "InstantEToggle",
+   Callback = function(Value) end,
+})
+
+TabMain:CreateToggle({
+   Name = "⚡ บินกลับบ้านอัตโนมัติเมื่อกดเก็บไข่ด้วยมือ",
+   CurrentValue = true,
+   Flag = "AutoFlyToggle",
+   Callback = function(Value)
+      autoFlyOnE = Value
+   end,
+})
+
+ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+   if triggerPlayer == player and autoFlyOnE and not (autoFarm100B or autoFarm1T) then
+      task.wait(0.15)
+      task.spawn(flyBackHomeSync)
+   end
+end)
+
+local autoClick = false
+TabMain:CreateToggle({
+   Name = "Auto Click / Speed",
+   CurrentValue = false,
+   Flag = "ToggleClick",
+   Callback = function(Value)
+      autoClick = Value
+      task.spawn(function()
+         while autoClick do
+            local rep = game:GetService("ReplicatedStorage")
+            pcall(function()
+               for _, v in pairs(rep:GetDescendants()) do
+                  if v:IsA("RemoteEvent") and (v.Name:lower():find("click") or v.Name:lower():find("tap")) then
+                     v:FireServer()
+                  end
+               end
+            end)
+            task.wait(0.1)
+         end
+      end)
+   end,
+})
+
+TabMain:CreateSlider({
+   Name = "WalkSpeed (ความเร็วเดิน)",
+   Range = {16, 250},
+   Increment = 1,
+   Suffix = " Speed",
+   CurrentValue = 16,
+   Flag = "WalkSpeed",
+   Callback = function(Value)
+      pcall(function() player.Character.Humanoid.WalkSpeed = Value end)
+   end,
+})
+
+-- ==================== แท็บฟาร์มอัตโนมัติ ====================
+
+TabAuto:CreateSection("วนลูปเก็บไข่ + บินกลับบ้านอัตโนมัติ (Loop)")
+
+TabAuto:CreateToggle({
+   Name = "🔁 ออโต้ฟาร์มไข่ 100B (ไปเอา > บินกลับฐานวนลูป)",
+   CurrentValue = false,
+   Flag = "Auto100BToggle",
+   Callback = function(Value)
+      autoFarm100B = Value
+      if Value then
+         task.spawn(function()
+            while autoFarm100B do
+               local target = findEggTarget("100B")
+               if target and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                  player.Character.HumanoidRootPart.CFrame = target.CFrame + Vector3.new(0, 3, 0)
+                  task.wait(0.4)
+                  triggerNearbyPrompts()
+                  task.wait(0.3)
+                  flyBackHomeSync()
+                  task.wait(1.5)
+               else
+                  task.wait(1)
+               end
+            end
+         end)
+      end
+   end,
+})
+
+TabAuto:CreateToggle({
+   Name = "🔁 ออโต้ฟาร์มไข่ 1T (ไปเอา > บินกลับฐานวนลูป)",
+   CurrentValue = false,
+   Flag = "Auto1TToggle",
+   Callback = function(Value)
+      autoFarm1T = Value
+      if Value then
+         task.spawn(function()
+            while autoFarm1T do
+               local target = findEggTarget("1T")
+               if target and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                  player.Character.HumanoidRootPart.CFrame = target.CFrame + Vector3.new(0, 3, 0)
+                  task.wait(0.4)
+                  triggerNearbyPrompts()
+                  task.wait(0.3)
+                  flyBackHomeSync()
+                  task.wait(1.5)
+               else
+                  task.wait(1)
+               end
+            end
+         end)
+      end
+   end,
+})
+
+-- ==================== แท็บระบบบิน / วาร์ป ====================
+
+TabTeleport:CreateSection("ระบบบินกลับบ้าน")
+
+TabTeleport:CreateButton({
+   Name = "🚀 สั่งบินกลับบ้านตอนนี้เลย",
+   Callback = function()
+      task.spawn(flyBackHomeSync)
+   end,
+})
+
+TabTeleport:CreateSlider({
+   Name = "Fly Speed (ปรับความเร็วบิน)",
+   Range = {100, 800},
+   Increment = 25,
+   Suffix = " FlySpeed",
+   CurrentValue = 350,
+   Flag = "FlySpeedSlider",
+   Callback = function(Value)
+      flySpeed = Value
+   end,
+})
+
+TabTeleport:CreateSection("วาร์ปไปจุดไข่ (กดเดี่ยว)")
+
+local function smartTeleportToEgg(keyword)
+   local targetPart = findEggTarget(keyword)
+   if targetPart and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+      player.Character.HumanoidRootPart.CFrame = targetPart.CFrame + Vector3.new(0, 4, 0)
+   else
+      Rayfield:Notify({
+         Title = "แจ้งเตือน",
+         Content = "ไม่พบตำแหน่งไข่ " .. keyword,
+         Duration = 3,
+         Image = 4483362458,
+      })
+   end
+end
+
+TabTeleport:CreateButton({
+   Name = "🥚 วาร์ปไปไข่ 1.5B",
+   Callback = function() smartTeleportToEgg("1.5B") end,
+})
+
+TabTeleport:CreateButton({
+   Name = "🥚 วาร์ปไปไข่ 100B",
+   Callback = function() smartTeleportToEgg("100B") end,
+})
+
+TabTeleport:CreateButton({
+   Name = "🥚 วาร์ปไปไข่ 1T",
+   Callback = function() smartTeleportToEgg("1T") end,
+})
